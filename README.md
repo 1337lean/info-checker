@@ -37,7 +37,33 @@ It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. 
 - Windows 10 or Windows 11
 - Python 3.10 or newer
 
-## Run From Source
+## Quick Start
+
+Download or clone the project, then double-click:
+
+```text
+run.bat
+```
+
+The launcher creates a local `.venv`, installs the required packages, and starts the app.
+
+If Windows SmartScreen or your browser warns about downloaded scripts, review the file first. It only creates a Python virtual environment, installs `requirements.txt`, and runs `main.py`.
+
+## Run From PowerShell
+
+You can also run:
+
+```powershell
+.\run.ps1
+```
+
+If PowerShell blocks scripts on your system, use:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\run.ps1
+```
+
+## Manual Run
 
 Open PowerShell in the project folder and run:
 
@@ -46,7 +72,6 @@ python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
 pip install -r requirements.txt
-$env:PYTHONPATH = ".\src"
 python main.py
 ```
 
@@ -62,7 +87,6 @@ After installing dependencies, you can create a single executable with:
 
 ```powershell
 pip install pyinstaller
-$env:PYTHONPATH = ".\src"
 pyinstaller --noconsole --onefile --name "System Info Checker" main.py
 ```
 
