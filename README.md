@@ -6,7 +6,7 @@ It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. 
 
 ## Features
 
-- Modern dark PySide6 desktop interface
+- Modern dark PySide6 desktop interface with responsive stacked information rows
 - Refresh system information without restarting the app
 - Copy the full report to the clipboard
 - Save the full report as a `.txt` file

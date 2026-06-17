@@ -11,8 +11,6 @@ from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFrame,
-    QGridLayout,
-    QGroupBox,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -88,8 +86,11 @@ class InfoDashboard(QMainWindow):
 
         title = QLabel(__app_name__)
         title.setObjectName("TitleLabel")
+        title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         subtitle = QLabel("Read-only system hardware and runtime information")
         subtitle.setObjectName("SubtitleLabel")
+        subtitle.setWordWrap(True)
+        subtitle.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
 
         title_stack.addWidget(title)
         title_stack.addWidget(subtitle)
@@ -135,7 +136,7 @@ class InfoDashboard(QMainWindow):
         self.setStyleSheet(
             """
             QMainWindow, QWidget {
-                background: #111318;
+                background: #0f1117;
                 color: #eef2f7;
             }
             #TitleLabel {
@@ -150,38 +151,55 @@ class InfoDashboard(QMainWindow):
             QScrollArea {
                 background: transparent;
             }
-            QGroupBox {
-                border: 1px solid #293241;
-                border-radius: 8px;
-                margin-top: 18px;
-                padding: 18px 14px 14px 14px;
-                background: #171b22;
-                font-weight: 700;
-                color: #dce6f2;
+            QScrollBar:vertical {
+                background: #121722;
+                border: none;
+                width: 10px;
+                margin: 0;
             }
-            QGroupBox::title {
-                subcontrol-origin: margin;
-                left: 12px;
-                padding: 0 8px;
+            QScrollBar::handle:vertical {
+                background: #3a4658;
+                border-radius: 5px;
+                min-height: 48px;
+            }
+            QScrollBar::add-line:vertical,
+            QScrollBar::sub-line:vertical {
+                height: 0;
+            }
+            QFrame[role="section"] {
+                background: #161b24;
+                border: 1px solid #2a3342;
+                border-radius: 8px;
+            }
+            QLabel[role="sectionTitle"] {
+                background: transparent;
                 color: #81d4fa;
+                font-size: 13px;
+                font-weight: 800;
+                letter-spacing: 0;
+            }
+            QFrame[role="infoRow"] {
+                background: #0d1118;
+                border: 1px solid #242d3a;
+                border-radius: 8px;
             }
             QLabel[role="field"] {
-                color: #9aa6b5;
-                font-weight: 600;
+                background: transparent;
+                color: #9fb1c7;
+                font-size: 12px;
+                font-weight: 700;
             }
             QLabel[role="value"] {
+                background: transparent;
                 color: #f5f8fb;
-                background: #0d1016;
-                border: 1px solid #252c38;
-                border-radius: 6px;
-                padding: 8px 10px;
+                font-size: 13px;
                 selection-background-color: #2374ab;
             }
             QPushButton {
                 background: #1f6feb;
                 color: #ffffff;
                 border: none;
-                border-radius: 7px;
+                border-radius: 8px;
                 padding: 8px 14px;
                 font-weight: 700;
             }
@@ -196,7 +214,7 @@ class InfoDashboard(QMainWindow):
                 color: #8894a4;
             }
             QStatusBar {
-                background: #0d1016;
+                background: #0b0e14;
                 color: #aab4c2;
                 border-top: 1px solid #252c38;
             }
@@ -235,30 +253,43 @@ class InfoDashboard(QMainWindow):
             grouped.setdefault(item.category, []).append(item)
 
         for category, category_items in grouped.items():
-            group = QGroupBox(category)
-            grid = QGridLayout(group)
-            grid.setColumnStretch(0, 0)
-            grid.setColumnStretch(1, 1)
-            grid.setHorizontalSpacing(18)
-            grid.setVerticalSpacing(10)
+            section = QFrame()
+            section.setProperty("role", "section")
+            section_layout = QVBoxLayout(section)
+            section_layout.setContentsMargins(16, 14, 16, 16)
+            section_layout.setSpacing(10)
 
-            for row, item in enumerate(category_items):
+            section_title = QLabel(category)
+            section_title.setProperty("role", "sectionTitle")
+            section_title.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            section_layout.addWidget(section_title)
+
+            for item in category_items:
+                row = QFrame()
+                row.setProperty("role", "infoRow")
+                row_layout = QVBoxLayout(row)
+                row_layout.setContentsMargins(14, 11, 14, 12)
+                row_layout.setSpacing(5)
+
                 field = QLabel(item.label)
                 field.setProperty("role", "field")
                 field.setAlignment(Qt.AlignTop | Qt.AlignLeft)
-                field.setMinimumWidth(230)
+                field.setWordWrap(True)
+                field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
                 value = QLabel(item.value)
                 value.setProperty("role", "value")
                 value.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 value.setWordWrap(True)
+                value.setMinimumWidth(0)
                 value.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
                 self.value_labels.append(value)
 
-                grid.addWidget(field, row, 0)
-                grid.addWidget(value, row, 1)
+                row_layout.addWidget(field)
+                row_layout.addWidget(value)
+                section_layout.addWidget(row)
 
-            self.content_layout.addWidget(group)
+            self.content_layout.addWidget(section)
 
         self.content_layout.addStretch(1)
 
