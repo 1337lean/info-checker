@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "system-info-checker"
 version = "1.0.0"
-description = "A safe, read-only Windows desktop system information viewer."
+description = "A safe, read-only desktop system information viewer for Windows, macOS, and Linux."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }

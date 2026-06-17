@@ -1,8 +1,8 @@
 # System Info Checker
 
-System Info Checker is a safe, read-only Windows desktop GUI app for viewing common system, hardware, network, and runtime information.
+System Info Checker is a safe, read-only desktop GUI app for viewing common system, hardware, network, and runtime information on Windows, macOS, and Linux.
 
-It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. It only displays information gathered through normal read-only APIs, PowerShell/CIM queries, and read-only registry access where available.
+It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. It only displays information gathered through normal read-only APIs, shell tools, system files, PowerShell/CIM queries, and read-only registry access where available.
 
 ## Features
 
@@ -12,37 +12,47 @@ It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. 
 - Save the full report as a `.txt` file
 - Gracefully shows `Unavailable` when a field cannot be read
 - Does not require administrator privileges
+- Cross-platform launch scripts for Windows, macOS, and Linux
 - Organized for future PyInstaller packaging
 
 ## Information Displayed
 
-- Windows username
+- Username
 - Computer name
-- Windows version/build
+- OS version/build
 - CPU name
 - GPU name
 - RAM amount
-- Motherboard manufacturer, product, and serial when available
-- BIOS serial and version when available
+- Board/system manufacturer, product, and serial when available
+- Firmware/BIOS serial and version when available
 - Disk model and serial when available
 - MAC addresses for network adapters
 - Local IP address
 - Public IP address, when safely reachable through `https://api.ipify.org`
-- Machine GUID / HWID-style identifier from the normal Windows registry location when available
+- Machine identifier when available
 - Python version
 - App run time/date
 
 ## Requirements
 
-- Windows 10 or Windows 11
+- Windows 10 or newer, macOS, or Linux
 - Python 3.10 or newer
 
 ## Quick Start
 
-Download or clone the project, then double-click:
+Download or clone the project.
+
+On Windows, double-click:
 
 ```text
 run.bat
+```
+
+On macOS or Linux, run:
+
+```sh
+chmod +x run.sh
+./run.sh
 ```
 
 The launcher creates a local `.venv`, installs the required packages, and starts the app.
@@ -65,7 +75,7 @@ powershell -ExecutionPolicy Bypass -File .\run.ps1
 
 ## Manual Run
 
-Open PowerShell in the project folder and run:
+On Windows, open PowerShell in the project folder and run:
 
 ```powershell
 python -m venv .venv
@@ -81,6 +91,16 @@ If PowerShell blocks virtual environment activation, run this once for the curre
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 ```
 
+On macOS or Linux, open a terminal in the project folder and run:
+
+```sh
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install --upgrade pip
+pip install -r requirements.txt
+python main.py
+```
+
 ## Package Later With PyInstaller
 
 After installing dependencies, you can create a single executable with:
@@ -90,7 +110,7 @@ pip install pyinstaller
 pyinstaller --noconsole --onefile --name "System Info Checker" main.py
 ```
 
-The packaged app will be created under `dist\`.
+On Windows, the packaged app will be created under `dist\`. On macOS and Linux, it will be created under `dist/`.
 
 ## Safety Notes
 
@@ -102,4 +122,4 @@ This project is intentionally read-only:
 - No anti-cheat, licensing, ban evasion, or bypass behavior
 - No administrator privileges required
 
-Some fields depend on Windows APIs, firmware support, adapter settings, or permission boundaries. If Windows does not expose a value, the app displays `Unavailable`.
+Some fields depend on OS APIs, firmware support, adapter settings, installed command-line tools, or permission boundaries. If the operating system does not expose a value, the app displays `Unavailable`.

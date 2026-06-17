@@ -9,13 +9,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+from functools import lru_cache
 import getpass
 import json
 import os
 import platform
+import shutil
 import socket
 import subprocess
 import urllib.request
+from pathlib import Path
 
 try:
     import psutil
@@ -45,22 +48,22 @@ def collect_system_info() -> list[InfoItem]:
 
     started_at = datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
     info: list[InfoItem] = [
-        InfoItem("User", "Windows username", _username()),
-        InfoItem("User", "Computer name", _first_value(os.environ.get("COMPUTERNAME"), platform.node())),
-        InfoItem("Windows", "Windows version/build", _windows_version()),
+        InfoItem("User", "Username", _username()),
+        InfoItem("User", "Computer name", _computer_name()),
+        InfoItem("Operating System", "OS version/build", _os_version()),
         InfoItem("Hardware", "CPU name", _cpu_name()),
         InfoItem("Hardware", "GPU name", _gpu_name()),
         InfoItem("Hardware", "RAM amount", _ram_amount()),
-        InfoItem("Hardware", "Motherboard manufacturer", _baseboard_value("Manufacturer")),
-        InfoItem("Hardware", "Motherboard product", _baseboard_value("Product")),
-        InfoItem("Hardware", "Motherboard serial", _baseboard_value("SerialNumber")),
-        InfoItem("Firmware", "BIOS serial", _bios_value("SerialNumber")),
-        InfoItem("Firmware", "BIOS version", _bios_value("SMBIOSBIOSVersion")),
+        InfoItem("Hardware", "Board/system manufacturer", _baseboard_value("Manufacturer")),
+        InfoItem("Hardware", "Board/system product", _baseboard_value("Product")),
+        InfoItem("Hardware", "Board/system serial", _baseboard_value("SerialNumber")),
+        InfoItem("Firmware", "Firmware/BIOS serial", _bios_value("SerialNumber")),
+        InfoItem("Firmware", "Firmware/BIOS version", _bios_value("SMBIOSBIOSVersion")),
         InfoItem("Storage", "Disk model/serial", _disk_models_and_serials()),
         InfoItem("Network", "MAC addresses", _mac_addresses()),
         InfoItem("Network", "Local IP address", _local_ip()),
         InfoItem("Network", "Public IP address", _public_ip()),
-        InfoItem("Identifiers", "Machine GUID / HWID-style identifier", _machine_guid()),
+        InfoItem("Identifiers", "Machine identifier", _machine_identifier()),
         InfoItem("Runtime", "Python version", platform.python_version()),
         InfoItem("Runtime", "App run time/date", started_at),
     ]
@@ -106,7 +109,7 @@ def _normalize(value, default: str = UNAVAILABLE) -> str:
 def _first_value(*values) -> str:
     for value in values:
         text = _normalize(value, "")
-        if text:
+        if text and text != UNAVAILABLE:
             return text
     return UNAVAILABLE
 
@@ -115,8 +118,13 @@ def _username() -> str:
     return _first_value(os.environ.get("USERNAME"), os.environ.get("USER"), _safe_get(os.getlogin), _safe_get(getpass.getuser))
 
 
-def _windows_version() -> str:
-    if platform.system() != "Windows":
+def _computer_name() -> str:
+    return _first_value(os.environ.get("COMPUTERNAME"), platform.node(), socket.gethostname())
+
+
+def _os_version() -> str:
+    system = platform.system()
+    if system != "Windows":
         return _normalize(platform.platform())
 
     caption = _powershell_cim_value("Win32_OperatingSystem", "Caption")
@@ -127,6 +135,16 @@ def _windows_version() -> str:
 
 
 def _cpu_name() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        value = _command_output(["sysctl", "-n", "machdep.cpu.brand_string"])
+        if value != UNAVAILABLE:
+            return value
+    elif system == "Linux":
+        value = _linux_cpu_name()
+        if value != UNAVAILABLE:
+            return value
+
     value = _powershell_cim_value("Win32_Processor", "Name")
     if value != UNAVAILABLE:
         return value
@@ -134,6 +152,16 @@ def _cpu_name() -> str:
 
 
 def _gpu_name() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        value = _system_profiler_values("SPDisplaysDataType", "Chipset Model")
+        if value != UNAVAILABLE:
+            return value
+    elif system == "Linux":
+        value = _linux_gpu_name()
+        if value != UNAVAILABLE:
+            return value
+
     return _powershell_cim_value("Win32_VideoController", "Name", multiple=True)
 
 
@@ -141,25 +169,77 @@ def _ram_amount() -> str:
     if psutil is not None:
         try:
             total = psutil.virtual_memory().total
-            return f"{total / (1024 ** 3):.2f} GB"
+            return _format_bytes_as_gb(total)
         except Exception:
             pass
 
-    total_kb = _powershell_command(
+    system = platform.system()
+    if system == "Darwin":
+        value = _command_output(["sysctl", "-n", "hw.memsize"])
+        if value != UNAVAILABLE and value.isdigit():
+            return _format_bytes_as_gb(int(value))
+    elif system == "Linux":
+        value = _linux_mem_total()
+        if value != UNAVAILABLE:
+            return value
+
+    total_gb = _powershell_command(
         "[Math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 2)"
     )
-    return f"{total_kb} GB" if total_kb != UNAVAILABLE else UNAVAILABLE
+    return f"{total_gb} GB" if total_gb != UNAVAILABLE else UNAVAILABLE
 
 
 def _baseboard_value(property_name: str) -> str:
+    system = platform.system()
+    if system == "Darwin":
+        mac_values = {
+            "Manufacturer": "Apple Inc.",
+            "Product": _command_output(["sysctl", "-n", "hw.model"]),
+            "SerialNumber": _mac_hardware_value("Serial Number"),
+        }
+        return _normalize(mac_values.get(property_name))
+
+    if system == "Linux":
+        linux_files = {
+            "Manufacturer": "/sys/class/dmi/id/board_vendor",
+            "Product": "/sys/class/dmi/id/board_name",
+            "SerialNumber": "/sys/class/dmi/id/board_serial",
+        }
+        return _read_first_line(linux_files.get(property_name, ""))
+
     return _powershell_cim_value("Win32_BaseBoard", property_name)
 
 
 def _bios_value(property_name: str) -> str:
+    system = platform.system()
+    if system == "Darwin":
+        mac_values = {
+            "SerialNumber": _mac_hardware_value("Serial Number"),
+            "SMBIOSBIOSVersion": _mac_hardware_value("System Firmware Version"),
+        }
+        return _normalize(mac_values.get(property_name))
+
+    if system == "Linux":
+        linux_files = {
+            "SerialNumber": "/sys/class/dmi/id/product_serial",
+            "SMBIOSBIOSVersion": "/sys/class/dmi/id/bios_version",
+        }
+        return _read_first_line(linux_files.get(property_name, ""))
+
     return _powershell_cim_value("Win32_BIOS", property_name)
 
 
 def _disk_models_and_serials() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        value = _mac_disk_models_and_serials()
+        if value != UNAVAILABLE:
+            return value
+    elif system == "Linux":
+        value = _linux_disk_models_and_serials()
+        if value != UNAVAILABLE:
+            return value
+
     ps_value = _powershell_command(
         "Get-CimInstance Win32_DiskDrive | "
         "Select-Object Model,SerialNumber | ConvertTo-Json -Compress"
@@ -236,8 +316,9 @@ def _public_ip() -> str:
         return UNAVAILABLE
 
 
-def _machine_guid() -> str:
-    if platform.system() == "Windows" and winreg is not None:
+def _machine_identifier() -> str:
+    system = platform.system()
+    if system == "Windows" and winreg is not None:
         try:
             with winreg.OpenKey(
                 winreg.HKEY_LOCAL_MACHINE,
@@ -250,7 +331,147 @@ def _machine_guid() -> str:
         except Exception:
             pass
 
+    if system == "Darwin":
+        value = _mac_hardware_value("Hardware UUID")
+        if value != UNAVAILABLE:
+            return value
+
+    if system == "Linux":
+        value = _first_value(
+            _read_first_line("/etc/machine-id"),
+            _read_first_line("/var/lib/dbus/machine-id"),
+        )
+        if value != UNAVAILABLE:
+            return value
+
     return UNAVAILABLE
+
+
+def _linux_cpu_name() -> str:
+    try:
+        with Path("/proc/cpuinfo").open(encoding="utf-8", errors="replace") as cpuinfo:
+            for line in cpuinfo:
+                key, separator, value = line.partition(":")
+                if separator and key.strip().lower() in {"model name", "hardware", "processor"}:
+                    return _normalize(value)
+    except OSError:
+        pass
+    return UNAVAILABLE
+
+
+def _linux_mem_total() -> str:
+    try:
+        with Path("/proc/meminfo").open(encoding="utf-8", errors="replace") as meminfo:
+            for line in meminfo:
+                key, separator, value = line.partition(":")
+                if separator and key == "MemTotal":
+                    amount, _, unit = value.strip().partition(" ")
+                    if amount.isdigit() and unit.lower().startswith("kb"):
+                        return _format_bytes_as_gb(int(amount) * 1024)
+    except OSError:
+        pass
+    return UNAVAILABLE
+
+
+def _linux_gpu_name() -> str:
+    if shutil.which("lspci"):
+        output = _command_output(["lspci"])
+        lines = [
+            line
+            for line in output.splitlines()
+            if any(marker in line.lower() for marker in ("vga compatible controller", "3d controller", "display controller"))
+        ]
+        if lines:
+            return "; ".join(line.split(":", 2)[-1].strip() for line in lines)
+
+    drm_names: list[str] = []
+    for vendor_file in Path("/sys/class/drm").glob("card*/device/vendor"):
+        device_file = vendor_file.with_name("device")
+        vendor = _read_first_line(str(vendor_file))
+        device = _read_first_line(str(device_file))
+        if vendor != UNAVAILABLE and device != UNAVAILABLE:
+            drm_names.append(f"PCI vendor {vendor}, device {device}")
+    return "; ".join(dict.fromkeys(drm_names)) if drm_names else UNAVAILABLE
+
+
+def _linux_disk_models_and_serials() -> str:
+    if shutil.which("lsblk"):
+        output = _command_output(["lsblk", "-d", "-n", "-o", "MODEL,SERIAL"])
+        if output != UNAVAILABLE:
+            values = [" ".join(line.split()) for line in output.splitlines() if line.strip()]
+            if values:
+                return "; ".join(values)
+    return UNAVAILABLE
+
+
+def _mac_disk_models_and_serials() -> str:
+    names = _system_profiler_values("SPStorageDataType", "Device Name")
+    media_names = _system_profiler_values("SPNVMeDataType", "Model")
+    return _first_value(names, media_names)
+
+
+def _mac_hardware_value(label: str) -> str:
+    if label == "Serial Number":
+        return _first_value(
+            _system_profiler_values("SPHardwareDataType", "Serial Number"),
+            _system_profiler_values("SPHardwareDataType", "Serial Number (system)"),
+        )
+    return _system_profiler_values("SPHardwareDataType", label)
+
+
+@lru_cache(maxsize=8)
+def _system_profiler_output(data_type: str) -> str:
+    output = _command_output(["system_profiler", data_type])
+    if output == UNAVAILABLE:
+        return UNAVAILABLE
+    return output
+
+
+def _system_profiler_values(data_type: str, label: str) -> str:
+    output = _system_profiler_output(data_type)
+    if output == UNAVAILABLE:
+        return UNAVAILABLE
+
+    prefix = f"{label}:"
+    values = []
+    for line in output.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(prefix):
+            values.append(stripped.removeprefix(prefix).strip())
+    return "; ".join(dict.fromkeys(value for value in values if value)) or UNAVAILABLE
+
+
+def _read_first_line(path: str) -> str:
+    if not path:
+        return UNAVAILABLE
+    try:
+        return _normalize(Path(path).read_text(encoding="utf-8", errors="replace").splitlines()[0])
+    except (OSError, IndexError):
+        return UNAVAILABLE
+
+
+def _command_output(command: list[str], timeout: int = 8) -> str:
+    if not command or shutil.which(command[0]) is None:
+        return UNAVAILABLE
+
+    try:
+        completed = subprocess.run(
+            command,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            check=False,
+        )
+    except Exception:
+        return UNAVAILABLE
+
+    if completed.returncode != 0:
+        return UNAVAILABLE
+    return _normalize(completed.stdout)
+
+
+def _format_bytes_as_gb(value: int) -> str:
+    return f"{value / (1024 ** 3):.2f} GB"
 
 
 def _powershell_cim_value(class_name: str, property_name: str, multiple: bool = False) -> str:

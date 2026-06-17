@@ -88,7 +88,7 @@ class InfoDashboard(QMainWindow):
 
         title = QLabel(__app_name__)
         title.setObjectName("TitleLabel")
-        subtitle = QLabel("Read-only Windows hardware and runtime information")
+        subtitle = QLabel("Read-only system hardware and runtime information")
         subtitle.setObjectName("SubtitleLabel")
 
         title_stack.addWidget(title)
