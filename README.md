@@ -6,9 +6,10 @@ It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. 
 
 ## Features
 
-- Modern dark PySide6 desktop interface with responsive stacked information rows
+- Modern PySide6 dashboard interface with summary cards and sectioned details
+- Search system details without leaving the main view
 - Quickly refresh system information without restarting the app
-- Copy the full report to the clipboard
+- Copy individual details or the full report to the clipboard
 - Save the full report as a `.txt` file
 - Gracefully shows `Unavailable` when a field cannot be read
 - Does not require administrator privileges
