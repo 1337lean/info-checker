@@ -10,7 +10,9 @@ It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. 
 - Search system details without leaving the main view
 - Quickly refresh system information without restarting the app
 - Copy individual details or the full report to the clipboard
-- Save the full report as a `.txt` file
+- Redact sensitive values in the app before copying or saving reports
+- Save the full report as a `.txt` file or `.json` snapshot
+- Compare the current scan against a saved JSON snapshot
 - Gracefully shows `Unavailable` when a field cannot be read
 - Does not require administrator privileges
 - Cross-platform launch scripts for Windows, macOS, and Linux
@@ -24,12 +26,24 @@ It does **not** spoof, hide, randomize, bypass, or change hardware identifiers. 
 - CPU name
 - GPU name
 - RAM amount
+- CPU usage
+- Memory usage
+- Boot time and uptime
+- Battery status and health when available
 - Board/system manufacturer, product, and serial when available
 - Firmware/BIOS serial and version when available
 - Disk model and serial when available
+- Storage capacity and free space
 - MAC addresses for network adapters
 - Local IP address
 - Public IP address, when safely reachable through `https://api.ipify.org`
+- Active network adapter
+- Wi-Fi SSID when safely available
+- Display resolution and refresh rate when available
+- System architecture
+- Virtualization status
+- Secure Boot status when available
+- TPM status when available
 - Machine identifier when available
 - Python version
 - App run time/date
@@ -123,4 +137,4 @@ This project is intentionally read-only:
 - No anti-cheat, licensing, ban evasion, or bypass behavior
 - No administrator privileges required
 
-Some fields depend on OS APIs, firmware support, adapter settings, installed command-line tools, or permission boundaries. If the operating system does not expose a value, the app displays `Unavailable`.
+Some fields depend on OS APIs, firmware support, adapter settings, installed command-line tools, or permission boundaries. If the operating system does not expose a value, the app displays `Unavailable`. On newer macOS versions, Wi-Fi SSIDs may be shown as `Hidden by macOS privacy` when read-only system APIs mask the network name.

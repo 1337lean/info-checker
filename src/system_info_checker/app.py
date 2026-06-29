@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import sys
 
@@ -10,6 +11,7 @@ from PySide6.QtCore import QThread, Qt, Signal
 from PySide6.QtGui import QAction, QClipboard, QCloseEvent, QFont
 from PySide6.QtWidgets import (
     QApplication,
+    QCheckBox,
     QFileDialog,
     QFrame,
     QGridLayout,
@@ -28,7 +30,7 @@ from PySide6.QtWidgets import (
 )
 
 from . import __app_name__, __version__
-from .collector import InfoItem, collect_system_info, format_report
+from .collector import InfoItem, collect_system_info, format_json_report, format_report, item_value
 
 
 UNAVAILABLE_TEXT = "Unavailable"
@@ -40,6 +42,7 @@ class RowView:
 
     item: InfoItem
     widget: QFrame
+    value_label: QLabel
     haystack: str
 
 
@@ -97,6 +100,11 @@ class InfoDashboard(QMainWindow):
         save_action.triggered.connect(self.save_report)
         save_action.setShortcut("Ctrl+S")
         self.addAction(save_action)
+
+        compare_action = QAction("Compare Snapshot", self)
+        compare_action.triggered.connect(self.compare_snapshot)
+        compare_action.setShortcut("Ctrl+O")
+        self.addAction(compare_action)
 
     def _build_layout(self) -> None:
         root = QWidget()
@@ -164,6 +172,16 @@ class InfoDashboard(QMainWindow):
         self.clear_search_button = self._make_button("Clear", "quiet")
         self.clear_search_button.clicked.connect(self.search_input.clear)
         controls.addWidget(self.clear_search_button)
+
+        self.redact_checkbox = QCheckBox("Redact")
+        self.redact_checkbox.setObjectName("OptionToggle")
+        self.redact_checkbox.setCursor(Qt.PointingHandCursor)
+        self.redact_checkbox.toggled.connect(self._redaction_changed)
+        controls.addWidget(self.redact_checkbox)
+
+        self.compare_button = self._make_button("Compare", "secondary")
+        self.compare_button.clicked.connect(self.compare_snapshot)
+        controls.addWidget(self.compare_button)
         root_layout.addLayout(controls)
 
         self.scroll_area = QScrollArea()
@@ -291,6 +309,22 @@ class InfoDashboard(QMainWindow):
             }
             #SearchInput::placeholder {
                 color: #777f88;
+            }
+            #OptionToggle {
+                background: #1b1e22;
+                border: 1px solid #3a4048;
+                border-radius: 8px;
+                color: #dfe5ec;
+                font-size: 12px;
+                font-weight: 800;
+                padding: 8px 12px;
+            }
+            #OptionToggle:hover {
+                border-color: #5aa7a7;
+            }
+            #OptionToggle::indicator {
+                width: 16px;
+                height: 16px;
             }
             QPushButton {
                 border-radius: 8px;
@@ -460,7 +494,7 @@ class InfoDashboard(QMainWindow):
         field.setWordWrap(True)
         field.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
 
-        value = QLabel(item.value)
+        value = QLabel(self._display_value(item))
         value.setProperty("role", "value")
         if item.value == UNAVAILABLE_TEXT:
             value.setProperty("state", "unavailable")
@@ -479,8 +513,7 @@ class InfoDashboard(QMainWindow):
         copy_button.clicked.connect(lambda _checked=False, copied_item=item: self.copy_item(copied_item))
         layout.addWidget(copy_button, alignment=Qt.AlignTop)
 
-        haystack = f"{item.category} {item.label} {item.value}".casefold()
-        return RowView(item=item, widget=row, haystack=haystack)
+        return RowView(item=item, widget=row, value_label=value, haystack=self._row_haystack(item))
 
     def _update_overview(self) -> None:
         self.summary_labels["os"].setText(self._value_for("OS version/build"))
@@ -491,7 +524,7 @@ class InfoDashboard(QMainWindow):
     def _value_for(self, label: str) -> str:
         for item in self.items:
             if item.label == label:
-                return item.value
+                return self._display_value(item)
         return "--"
 
     def _network_summary(self) -> str:
@@ -521,6 +554,22 @@ class InfoDashboard(QMainWindow):
 
             category_view.widget.setVisible(visible_rows > 0)
 
+    def _redaction_changed(self) -> None:
+        for category_view in self.category_views.values():
+            for row_view in category_view.rows:
+                row_view.value_label.setText(self._display_value(row_view.item))
+                row_view.haystack = self._row_haystack(row_view.item)
+        self._update_overview()
+        self._filter_items(self.search_input.text())
+        state = "enabled" if self._redact_enabled() else "disabled"
+        self.statusBar().showMessage(f"Redaction {state}")
+
+    def _display_value(self, item: InfoItem) -> str:
+        return item_value(item, self._redact_enabled())
+
+    def _row_haystack(self, item: InfoItem) -> str:
+        return f"{item.category} {item.label} {self._display_value(item)}".casefold()
+
     def _clear_layout(self, layout: QLayout) -> None:
         while layout.count():
             item = layout.takeAt(0)
@@ -535,12 +584,14 @@ class InfoDashboard(QMainWindow):
         self.refresh_button.setEnabled(enabled)
         self.copy_button.setEnabled(enabled and bool(self.items))
         self.save_button.setEnabled(enabled and bool(self.items))
+        self.compare_button.setEnabled(enabled and bool(self.items))
         self.search_input.setEnabled(enabled and bool(self.items))
         self.clear_search_button.setEnabled(enabled and bool(self.items))
+        self.redact_checkbox.setEnabled(enabled)
 
     def copy_item(self, item: InfoItem) -> None:
         clipboard: QClipboard = QApplication.clipboard()
-        clipboard.setText(f"{item.label}: {item.value}")
+        clipboard.setText(f"{item.label}: {item_value(item, self._redact_enabled())}")
         self.statusBar().showMessage(f"Copied {item.label}")
 
     def copy_all(self) -> None:
@@ -548,7 +599,7 @@ class InfoDashboard(QMainWindow):
             return
 
         clipboard: QClipboard = QApplication.clipboard()
-        clipboard.setText(format_report(self.items))
+        clipboard.setText(format_report(self.items, redact_sensitive=self._redact_enabled()))
         self.statusBar().showMessage("Report copied to clipboard")
 
     def save_report(self) -> None:
@@ -559,22 +610,117 @@ class InfoDashboard(QMainWindow):
         if not report_dir.exists():
             report_dir = Path.home()
         default_name = report_dir / "system-info-checker-report.txt"
-        path, _ = QFileDialog.getSaveFileName(
+        path, selected_filter = QFileDialog.getSaveFileName(
             self,
             "Save System Info Report",
             str(default_name),
-            "Text Files (*.txt);;All Files (*)",
+            "Text Files (*.txt);;JSON Snapshots (*.json);;All Files (*)",
+        )
+        if not path:
+            return
+
+        output_path = Path(path)
+        save_json = selected_filter.startswith("JSON") or output_path.suffix.casefold() == ".json"
+        if not output_path.suffix:
+            output_path = output_path.with_suffix(".json" if save_json else ".txt")
+        content = (
+            format_json_report(self.items, redact_sensitive=self._redact_enabled())
+            if save_json
+            else format_report(self.items, redact_sensitive=self._redact_enabled())
+        )
+
+        try:
+            output_path.write_text(content, encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.warning(self, "Save failed", f"Could not save the report:\n\n{exc}")
+            return
+
+        self.statusBar().showMessage(f"Report saved to {output_path}")
+
+    def compare_snapshot(self) -> None:
+        if not self.items:
+            return
+
+        report_dir = Path.home() / "Desktop"
+        if not report_dir.exists():
+            report_dir = Path.home()
+        path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Compare JSON Snapshot",
+            str(report_dir),
+            "JSON Snapshots (*.json);;All Files (*)",
         )
         if not path:
             return
 
         try:
-            Path(path).write_text(format_report(self.items), encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.warning(self, "Save failed", f"Could not save the report:\n\n{exc}")
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Compare failed", f"Could not read the snapshot:\n\n{exc}")
             return
 
-        self.statusBar().showMessage(f"Report saved to {path}")
+        snapshot_items = data.get("items")
+        if not isinstance(snapshot_items, list):
+            QMessageBox.warning(self, "Compare failed", "The selected file is not a System Info Checker JSON snapshot.")
+            return
+
+        compare_redacted = bool(data.get("redacted")) or self._redact_enabled()
+        previous = self._snapshot_map(snapshot_items, compare_redacted)
+        current = {
+            (item.category, item.label): item_value(item, compare_redacted)
+            for item in self.items
+        }
+        differences = self._snapshot_differences(previous, current)
+
+        if not differences:
+            QMessageBox.information(self, "Compare Snapshot", "No differences found.")
+            self.statusBar().showMessage("Snapshot comparison found no differences")
+            return
+
+        message = QMessageBox(self)
+        message.setWindowTitle("Compare Snapshot")
+        message.setIcon(QMessageBox.Information)
+        message.setText(f"{len(differences)} difference{'s' if len(differences) != 1 else ''} found.")
+        message.setDetailedText("\n".join(differences[:200]))
+        message.exec()
+        self.statusBar().showMessage(f"Snapshot comparison found {len(differences)} differences")
+
+    def _redact_enabled(self) -> bool:
+        return self.redact_checkbox.isChecked()
+
+    def _snapshot_map(self, snapshot_items: list, redact_sensitive: bool) -> dict[tuple[str, str], str]:
+        mapped: dict[tuple[str, str], str] = {}
+        for entry in snapshot_items:
+            if not isinstance(entry, dict):
+                continue
+            category = entry.get("category")
+            label = entry.get("label")
+            value = entry.get("value")
+            if isinstance(category, str) and isinstance(label, str):
+                snapshot_item = InfoItem(
+                    category=category,
+                    label=label,
+                    value=str(value),
+                    sensitive=bool(entry.get("sensitive")),
+                )
+                mapped[(category, label)] = item_value(snapshot_item, redact_sensitive)
+        return mapped
+
+    def _snapshot_differences(
+        self,
+        previous: dict[tuple[str, str], str],
+        current: dict[tuple[str, str], str],
+    ) -> list[str]:
+        differences = []
+        for key in sorted(previous.keys() | current.keys()):
+            label = f"{key[0]} / {key[1]}"
+            if key not in previous:
+                differences.append(f"Added {label}: {current[key]}")
+            elif key not in current:
+                differences.append(f"Removed {label}: {previous[key]}")
+            elif previous[key] != current[key]:
+                differences.append(f"Changed {label}: {previous[key]} -> {current[key]}")
+        return differences
 
     def closeEvent(self, event: QCloseEvent) -> None:
         if self.collector_thread and self.collector_thread.isRunning():

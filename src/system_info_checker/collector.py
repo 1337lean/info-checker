@@ -19,6 +19,7 @@ import platform
 import shutil
 import socket
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -34,8 +35,9 @@ except ImportError:  # pragma: no cover - non-Windows development machines
 
 
 UNAVAILABLE = "Unavailable"
+HIDDEN_BY_OS = "Hidden by macOS privacy"
 COLLECTION_WORKERS = 8
-PUBLIC_IP_TIMEOUT_SECONDS = 2
+PUBLIC_IP_TIMEOUT_SECONDS = 1
 
 
 @dataclass(frozen=True)
@@ -45,6 +47,7 @@ class InfoItem:
     category: str
     label: str
     value: str
+    sensitive: bool = False
 
 
 def collect_system_info() -> list[InfoItem]:
@@ -55,37 +58,51 @@ def collect_system_info() -> list[InfoItem]:
         _windows_cim_snapshot.cache_clear()
         _windows_cim_snapshot()
 
-    item_specs: list[tuple[str, str, Callable[[], str]]] = [
-        ("User", "Username", _username),
-        ("User", "Computer name", _computer_name),
-        ("Operating System", "OS version/build", _os_version),
-        ("Hardware", "CPU name", _cpu_name),
-        ("Hardware", "GPU name", _gpu_name),
-        ("Hardware", "RAM amount", _ram_amount),
-        ("Hardware", "Board/system manufacturer", lambda: _baseboard_value("Manufacturer")),
-        ("Hardware", "Board/system product", lambda: _baseboard_value("Product")),
-        ("Hardware", "Board/system serial", lambda: _baseboard_value("SerialNumber")),
-        ("Firmware", "Firmware/BIOS serial", lambda: _bios_value("SerialNumber")),
-        ("Firmware", "Firmware/BIOS version", lambda: _bios_value("SMBIOSBIOSVersion")),
-        ("Storage", "Disk model/serial", _disk_models_and_serials),
-        ("Network", "MAC addresses", _mac_addresses),
-        ("Network", "Local IP address", _local_ip),
-        ("Network", "Public IP address", _public_ip),
-        ("Identifiers", "Machine identifier", _machine_identifier),
-        ("Runtime", "Python version", platform.python_version),
-        ("Runtime", "App run time/date", lambda: started_at),
+    item_specs: list[tuple[str, str, Callable[[], str], bool]] = [
+        ("User", "Username", _username, True),
+        ("User", "Computer name", _computer_name, True),
+        ("Operating System", "OS version/build", _os_version, False),
+        ("Hardware", "CPU name", _cpu_name, False),
+        ("Hardware", "GPU name", _gpu_name, False),
+        ("Hardware", "RAM amount", _ram_amount, False),
+        ("Hardware", "Board/system manufacturer", lambda: _baseboard_value("Manufacturer"), False),
+        ("Hardware", "Board/system product", lambda: _baseboard_value("Product"), False),
+        ("Hardware", "Board/system serial", lambda: _baseboard_value("SerialNumber"), True),
+        ("Firmware", "Firmware/BIOS serial", lambda: _bios_value("SerialNumber"), True),
+        ("Firmware", "Firmware/BIOS version", lambda: _bios_value("SMBIOSBIOSVersion"), False),
+        ("Health", "CPU usage", _cpu_usage, False),
+        ("Health", "Memory usage", _memory_usage, False),
+        ("Health", "System volume free space", _system_volume_space, False),
+        ("Health", "Boot time / uptime", _boot_time_and_uptime, False),
+        ("Health", "Battery status", _battery_status, False),
+        ("Health", "Battery health", _battery_health, False),
+        ("Storage", "Disk model/serial", _disk_models_and_serials, True),
+        ("Storage", "Storage capacity/free space", _storage_capacity_free_space, False),
+        ("Network", "MAC addresses", _mac_addresses, True),
+        ("Network", "Local IP address", _local_ip, True),
+        ("Network", "Public IP address", _public_ip, True),
+        ("Network", "Active network adapter", _active_network_adapter, True),
+        ("Network", "Wi-Fi SSID", _wifi_ssid, True),
+        ("Device Details", "Display resolution/refresh rate", _display_resolution_refresh_rate, False),
+        ("Device Details", "System architecture", _system_architecture, False),
+        ("Device Details", "Virtualization status", _virtualization_status, False),
+        ("Security", "Secure Boot status", _secure_boot_status, False),
+        ("Security", "TPM status", _tpm_status, False),
+        ("Identifiers", "Machine identifier", _machine_identifier, True),
+        ("Runtime", "Python version", platform.python_version, False),
+        ("Runtime", "App run time/date", lambda: started_at, False),
     ]
     values = _collect_values(item_specs)
     return [
-        InfoItem(category, label, value)
-        for (category, label, _), value in zip(item_specs, values)
+        InfoItem(category, label, value, sensitive)
+        for (category, label, _, sensitive), value in zip(item_specs, values)
     ]
 
 
-def _collect_values(item_specs: list[tuple[str, str, Callable[[], str]]]) -> list[str]:
+def _collect_values(item_specs: list[tuple[str, str, Callable[[], str], bool]]) -> list[str]:
     worker_count = min(COLLECTION_WORKERS, len(item_specs))
     with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(_collect_value, getter) for _, _, getter in item_specs]
+        futures = [executor.submit(_collect_value, getter) for _, _, getter, _ in item_specs]
         return [future.result() for future in futures]
 
 
@@ -96,7 +113,7 @@ def _collect_value(getter: Callable[[], str]) -> str:
         return UNAVAILABLE
 
 
-def format_report(items: list[InfoItem]) -> str:
+def format_report(items: list[InfoItem], redact_sensitive: bool = False) -> str:
     """Render collected items as a plain-text report."""
 
     lines = ["System Info Checker Report", "=" * 26, ""]
@@ -108,11 +125,50 @@ def format_report(items: list[InfoItem]) -> str:
                 lines.append("")
             current_category = item.category
             lines.append(f"[{current_category}]")
-        lines.append(f"{item.label}: {item.value}")
+        lines.append(f"{item.label}: {item_value(item, redact_sensitive)}")
 
     lines.append("")
     lines.append("Note: This report is read-only and does not modify system identifiers.")
     return "\n".join(lines)
+
+
+def format_json_report(items: list[InfoItem], redact_sensitive: bool = False) -> str:
+    """Render collected items as a JSON snapshot for export or comparison."""
+
+    payload = {
+        "app": "System Info Checker",
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "redacted": redact_sensitive,
+        "items": [
+            {
+                "category": item.category,
+                "label": item.label,
+                "value": item_value(item, redact_sensitive),
+                "sensitive": item.sensitive,
+            }
+            for item in items
+        ],
+    }
+    return json.dumps(payload, indent=2)
+
+
+def item_value(item: InfoItem, redact_sensitive: bool = False) -> str:
+    """Return a row value, masking sensitive information when requested."""
+
+    if not redact_sensitive or not item.sensitive or item.value in {UNAVAILABLE, HIDDEN_BY_OS}:
+        return item.value
+    return _redact_value(item.value)
+
+
+def _redact_value(value: str) -> str:
+    if "\n" not in value:
+        return "Redacted"
+
+    redacted_lines = []
+    for line in value.splitlines():
+        label, separator, _ = line.partition(":")
+        redacted_lines.append(f"{label}{separator} Redacted" if separator else "Redacted")
+    return "\n".join(redacted_lines)
 
 
 def _safe_get(func, default: str = UNAVAILABLE) -> str:
@@ -299,6 +355,143 @@ def _ram_amount() -> str:
     return f"{total_gb} GB" if total_gb != UNAVAILABLE else UNAVAILABLE
 
 
+def _cpu_usage() -> str:
+    if psutil is None:
+        return UNAVAILABLE
+    try:
+        return f"{psutil.cpu_percent(interval=0.2):.1f}%"
+    except Exception:
+        return UNAVAILABLE
+
+
+def _memory_usage() -> str:
+    if psutil is None:
+        return UNAVAILABLE
+    try:
+        memory = psutil.virtual_memory()
+    except Exception:
+        return UNAVAILABLE
+    return f"{_format_bytes_as_gb(memory.used)} used / {_format_bytes_as_gb(memory.total)} total ({memory.percent:.1f}%)"
+
+
+def _system_volume_space() -> str:
+    if psutil is None:
+        return UNAVAILABLE
+    try:
+        usage = psutil.disk_usage(_system_volume_path())
+    except Exception:
+        return UNAVAILABLE
+    return f"{_format_bytes_as_gb(usage.free)} free / {_format_bytes_as_gb(usage.total)} total ({usage.percent:.1f}% used)"
+
+
+def _storage_capacity_free_space() -> str:
+    if psutil is None:
+        return UNAVAILABLE
+
+    rows: list[str] = []
+    seen_mounts: set[str] = set()
+    try:
+        partitions = psutil.disk_partitions(all=False)
+    except Exception:
+        partitions = []
+
+    for partition in partitions:
+        mountpoint = _normalize(getattr(partition, "mountpoint", ""), "")
+        if not mountpoint or mountpoint in seen_mounts:
+            continue
+        try:
+            usage = psutil.disk_usage(mountpoint)
+        except Exception:
+            continue
+        seen_mounts.add(mountpoint)
+        rows.append(f"{mountpoint}: {_format_bytes_as_gb(usage.free)} free / {_format_bytes_as_gb(usage.total)} total")
+
+    if rows:
+        return "\n".join(rows)
+    return _system_volume_space()
+
+
+def _boot_time_and_uptime() -> str:
+    if psutil is None:
+        return UNAVAILABLE
+    try:
+        boot_time = datetime.fromtimestamp(psutil.boot_time()).astimezone()
+        uptime_seconds = max(0, int(time.time() - psutil.boot_time()))
+    except Exception:
+        return UNAVAILABLE
+    return f"{boot_time.strftime('%Y-%m-%d %H:%M:%S %Z')} ({_format_duration(uptime_seconds)} uptime)"
+
+
+def _battery_status() -> str:
+    if psutil is None or not hasattr(psutil, "sensors_battery"):
+        return UNAVAILABLE
+    try:
+        battery = psutil.sensors_battery()
+    except Exception:
+        return UNAVAILABLE
+    if battery is None:
+        return "No battery detected"
+
+    state = "plugged in" if battery.power_plugged else "on battery"
+    remaining = ""
+    if battery.secsleft not in (None, psutil.POWER_TIME_UNLIMITED, psutil.POWER_TIME_UNKNOWN):
+        remaining = f", {_format_duration(int(battery.secsleft))} remaining"
+    return f"{battery.percent:.0f}% - {state}{remaining}"
+
+
+def _battery_health() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        parts = [
+            _prefixed_value("Condition", _system_profiler_values("SPPowerDataType", "Condition")),
+            _prefixed_value("Cycle count", _system_profiler_values("SPPowerDataType", "Cycle Count")),
+            _prefixed_value("Maximum capacity", _system_profiler_values("SPPowerDataType", "Maximum Capacity")),
+        ]
+        return "; ".join(part for part in parts if part) or UNAVAILABLE
+
+    if system == "Linux":
+        rows = []
+        for battery_dir in Path("/sys/class/power_supply").glob("BAT*"):
+            health = _read_first_line(str(battery_dir / "health"))
+            cycle_count = _read_first_line(str(battery_dir / "cycle_count"))
+            full = _read_first_line(str(battery_dir / "energy_full"))
+            design = _read_first_line(str(battery_dir / "energy_full_design"))
+            if full == UNAVAILABLE:
+                full = _read_first_line(str(battery_dir / "charge_full"))
+            if design == UNAVAILABLE:
+                design = _read_first_line(str(battery_dir / "charge_full_design"))
+
+            parts = []
+            if health != UNAVAILABLE:
+                parts.append(f"health {health}")
+            if cycle_count != UNAVAILABLE:
+                parts.append(f"{cycle_count} cycles")
+            if full.isdigit() and design.isdigit() and int(design) > 0:
+                parts.append(f"{int(full) / int(design) * 100:.0f}% of design capacity")
+            if parts:
+                rows.append(f"{battery_dir.name}: {', '.join(parts)}")
+        return "\n".join(rows) if rows else UNAVAILABLE
+
+    if system == "Windows":
+        rows = _parse_json_rows(
+            _powershell_command(
+                "Get-CimInstance Win32_Battery | "
+                "Select-Object Name,EstimatedChargeRemaining,BatteryStatus | ConvertTo-Json -Compress"
+            )
+        )
+        formatted = []
+        for row in rows:
+            name = _normalize(row.get("Name"), "Battery")
+            charge = _normalize(row.get("EstimatedChargeRemaining"), "")
+            status = _windows_battery_status(_normalize(row.get("BatteryStatus"), ""))
+            parts = [part for part in [f"{charge}% charge" if charge else "", status] if part]
+            if parts:
+                formatted.append(f"{name}: {', '.join(parts)}")
+        return "\n".join(formatted) if formatted else UNAVAILABLE
+
+    return UNAVAILABLE
+
+
 def _baseboard_value(property_name: str) -> str:
     system = platform.system()
     if system == "Darwin":
@@ -398,6 +591,83 @@ def _mac_addresses() -> str:
     return "\n".join(dict.fromkeys(addresses)) if addresses else UNAVAILABLE
 
 
+def _active_network_adapter() -> str:
+    if psutil is None:
+        return UNAVAILABLE
+    try:
+        stats = psutil.net_if_stats()
+        addresses = psutil.net_if_addrs()
+    except Exception:
+        return UNAVAILABLE
+
+    rows = []
+    for adapter_name, adapter_stats in stats.items():
+        if not adapter_stats.isup:
+            continue
+        ipv4_values = [
+            address.address
+            for address in addresses.get(adapter_name, [])
+            if address.family == socket.AF_INET and not address.address.startswith("127.")
+        ]
+        if ipv4_values:
+            rows.append(f"{adapter_name}: {', '.join(ipv4_values)}")
+    return "\n".join(rows) if rows else UNAVAILABLE
+
+
+def _wifi_ssid() -> str:
+    system = platform.system()
+    if system == "Windows":
+        output = _command_output(["netsh", "wlan", "show", "interfaces"])
+        for line in output.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip() == "SSID":
+                return _normalize_ssid(value)
+        return UNAVAILABLE
+
+    if system == "Darwin":
+        hidden_by_os = False
+
+        for device in _mac_wifi_devices():
+            value = _mac_wifi_ssid_from_ipconfig(device)
+            if value not in {UNAVAILABLE, HIDDEN_BY_OS}:
+                return value
+            hidden_by_os = hidden_by_os or value == HIDDEN_BY_OS
+
+            output = _command_output(["networksetup", "-getairportnetwork", device])
+            prefix = "Current Wi-Fi Network:"
+            if output.startswith(prefix):
+                value = _normalize_ssid(output.removeprefix(prefix))
+                if value not in {UNAVAILABLE, HIDDEN_BY_OS}:
+                    return value
+                hidden_by_os = hidden_by_os or value == HIDDEN_BY_OS
+
+        if hidden_by_os:
+            return HIDDEN_BY_OS
+
+        airport = "/System/Library/PrivateFrameworks/Apple80211.framework/Versions/Current/Resources/airport"
+        output = _command_output([airport, "-I"])
+        for line in output.splitlines():
+            key, separator, value = line.partition(":")
+            if separator and key.strip() == "SSID":
+                value = _normalize_ssid(value)
+                if value not in {UNAVAILABLE, HIDDEN_BY_OS}:
+                    return value
+                hidden_by_os = hidden_by_os or value == HIDDEN_BY_OS
+        return HIDDEN_BY_OS if hidden_by_os else UNAVAILABLE
+
+    if system == "Linux":
+        if shutil.which("nmcli"):
+            output = _command_output(["nmcli", "-t", "-f", "active,ssid", "dev", "wifi"])
+            for line in output.splitlines():
+                active, separator, ssid = line.partition(":")
+                if separator and active == "yes":
+                    return _normalize_ssid(ssid.replace("\\:", ":"))
+        if shutil.which("iwgetid"):
+            return _normalize_ssid(_command_output(["iwgetid", "-r"]))
+
+    return UNAVAILABLE
+
+
 def _looks_like_mac(value: str) -> bool:
     if not value:
         return False
@@ -454,6 +724,160 @@ def _machine_identifier() -> str:
         )
         if value != UNAVAILABLE:
             return value
+
+    return UNAVAILABLE
+
+
+def _display_resolution_refresh_rate() -> str:
+    system = platform.system()
+    if system == "Darwin":
+        resolution = _system_profiler_values("SPDisplaysDataType", "Resolution")
+        refresh_rate = _system_profiler_values("SPDisplaysDataType", "Refresh Rate")
+        parts = [
+            _prefixed_value("Resolution", resolution),
+            _prefixed_value("Refresh rate", refresh_rate),
+        ]
+        return "; ".join(part for part in parts if part) or UNAVAILABLE
+
+    if system == "Linux":
+        output = _command_output(["xrandr", "--query"])
+        rows = []
+        for line in output.splitlines():
+            if "*" in line:
+                parts = line.split()
+                if parts:
+                    rows.append(" ".join(parts[:2]))
+        if rows:
+            return "; ".join(rows)
+
+    if system == "Windows":
+        rows = _parse_json_rows(
+            _powershell_command(
+                "Get-CimInstance Win32_VideoController | "
+                "Select-Object Name,CurrentHorizontalResolution,CurrentVerticalResolution,CurrentRefreshRate | "
+                "ConvertTo-Json -Compress"
+            )
+        )
+        formatted = []
+        for row in rows:
+            name = _normalize(row.get("Name"), "Display")
+            width = _normalize(row.get("CurrentHorizontalResolution"), "")
+            height = _normalize(row.get("CurrentVerticalResolution"), "")
+            refresh = _normalize(row.get("CurrentRefreshRate"), "")
+            if width and height:
+                suffix = f" @ {refresh} Hz" if refresh else ""
+                formatted.append(f"{name}: {width}x{height}{suffix}")
+        return "; ".join(formatted) if formatted else UNAVAILABLE
+
+    return UNAVAILABLE
+
+
+def _system_architecture() -> str:
+    parts = [
+        _normalize(platform.machine(), ""),
+        _normalize(platform.architecture()[0], ""),
+    ]
+    return " / ".join(part for part in parts if part) or UNAVAILABLE
+
+
+def _virtualization_status() -> str:
+    system = platform.system()
+    if system == "Windows":
+        rows = _parse_json_rows(
+            _powershell_command(
+                "Get-CimInstance Win32_ComputerSystem | "
+                "Select-Object Manufacturer,Model,HypervisorPresent | ConvertTo-Json -Compress"
+            )
+        )
+        if rows:
+            row = rows[0]
+            manufacturer = _normalize(row.get("Manufacturer"), "")
+            model = _normalize(row.get("Model"), "")
+            hypervisor = _normalize(row.get("HypervisorPresent"), "").lower() == "true"
+            detected = _detect_virtual_vendor(f"{manufacturer} {model}")
+            if hypervisor or detected:
+                detail = detected or f"{manufacturer} {model}".strip()
+                return f"Detected ({detail})" if detail else "Detected"
+            return "Not detected"
+
+    if system == "Linux":
+        if shutil.which("systemd-detect-virt"):
+            try:
+                completed = subprocess.run(
+                    ["systemd-detect-virt"],
+                    capture_output=True,
+                    text=True,
+                    timeout=4,
+                    check=False,
+                )
+                value = _normalize(completed.stdout, "")
+                if completed.returncode == 0 and value:
+                    return f"Detected ({value})"
+                if value == "none":
+                    return "Not detected"
+            except Exception:
+                pass
+        detected = _detect_virtual_vendor(
+            " ".join(
+                value
+                for value in [
+                    _read_first_line("/sys/class/dmi/id/sys_vendor"),
+                    _read_first_line("/sys/class/dmi/id/product_name"),
+                ]
+                if value != UNAVAILABLE
+            )
+        )
+        return f"Detected ({detected})" if detected else "Not detected"
+
+    if system == "Darwin":
+        value = _command_output(["sysctl", "-n", "kern.hv_vmm_present"])
+        if value == "1":
+            return "Detected"
+        if value == "0":
+            return "Not detected"
+
+    return UNAVAILABLE
+
+
+def _secure_boot_status() -> str:
+    system = platform.system()
+    if system == "Windows":
+        return _powershell_command(
+            "try { if (Confirm-SecureBootUEFI) { 'Enabled' } else { 'Disabled' } } "
+            "catch { 'Unavailable' }"
+        )
+
+    if system == "Linux":
+        if shutil.which("mokutil"):
+            output = _command_output(["mokutil", "--sb-state"])
+            if output != UNAVAILABLE:
+                return output
+        return "UEFI detected" if Path("/sys/firmware/efi").exists() else UNAVAILABLE
+
+    return UNAVAILABLE
+
+
+def _tpm_status() -> str:
+    system = platform.system()
+    if system == "Windows":
+        rows = _parse_json_rows(
+            _powershell_command(
+                "Get-Tpm | Select-Object TpmPresent,TpmReady,TpmEnabled,TpmActivated | ConvertTo-Json -Compress"
+            )
+        )
+        if rows:
+            row = rows[0]
+            present = _normalize(row.get("TpmPresent"), "")
+            ready = _normalize(row.get("TpmReady"), "")
+            enabled = _normalize(row.get("TpmEnabled"), "")
+            activated = _normalize(row.get("TpmActivated"), "")
+            return f"Present: {present}; Ready: {ready}; Enabled: {enabled}; Activated: {activated}"
+        return UNAVAILABLE
+
+    if system == "Linux":
+        tpm_devices = sorted(Path("/sys/class/tpm").glob("tpm*"))
+        if tpm_devices:
+            return "; ".join(device.name for device in tpm_devices)
 
     return UNAVAILABLE
 
@@ -559,6 +983,106 @@ def _read_first_line(path: str) -> str:
         return _normalize(Path(path).read_text(encoding="utf-8", errors="replace").splitlines()[0])
     except (OSError, IndexError):
         return UNAVAILABLE
+
+
+def _system_volume_path() -> str:
+    return str(Path.home().anchor or "/")
+
+
+def _prefixed_value(prefix: str, value: str) -> str:
+    return f"{prefix}: {value}" if value != UNAVAILABLE else ""
+
+
+def _format_duration(total_seconds: int) -> str:
+    days, remainder = divmod(total_seconds, 86400)
+    hours, remainder = divmod(remainder, 3600)
+    minutes, _ = divmod(remainder, 60)
+
+    parts = []
+    if days:
+        parts.append(f"{days}d")
+    if hours:
+        parts.append(f"{hours}h")
+    if minutes or not parts:
+        parts.append(f"{minutes}m")
+    return " ".join(parts)
+
+
+def _windows_battery_status(value: str) -> str:
+    statuses = {
+        "1": "discharging",
+        "2": "plugged in",
+        "3": "fully charged",
+        "4": "low",
+        "5": "critical",
+        "6": "charging",
+        "7": "charging high",
+        "8": "charging low",
+        "9": "charging critical",
+        "10": "undefined",
+        "11": "partially charged",
+    }
+    return statuses.get(value, "")
+
+
+def _mac_wifi_devices() -> list[str]:
+    output = _command_output(["networksetup", "-listallhardwareports"])
+    if output == UNAVAILABLE:
+        return ["en0", "en1"]
+
+    devices: list[str] = []
+    lines = output.splitlines()
+    for index, line in enumerate(lines):
+        if line.strip() in {"Hardware Port: Wi-Fi", "Hardware Port: AirPort"}:
+            for device_line in lines[index + 1 : index + 4]:
+                key, separator, value = device_line.partition(":")
+                if separator and key.strip() == "Device":
+                    devices.append(value.strip())
+                    break
+    return devices or ["en0", "en1"]
+
+
+def _mac_wifi_ssid_from_ipconfig(device: str) -> str:
+    output = _command_output(["ipconfig", "getsummary", device])
+    if output == UNAVAILABLE:
+        return UNAVAILABLE
+
+    for line in output.splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip() == "SSID":
+            return _normalize_ssid(value)
+    return UNAVAILABLE
+
+
+def _normalize_ssid(value: str) -> str:
+    text = _normalize(value)
+    if text == UNAVAILABLE:
+        return UNAVAILABLE
+    lowered = text.casefold()
+    if text == "<redacted>" or "redacted" in lowered:
+        return HIDDEN_BY_OS
+    if "not associated" in lowered or "not connected" in lowered:
+        return UNAVAILABLE
+    return text
+
+
+def _detect_virtual_vendor(value: str) -> str:
+    lowered = value.lower()
+    vendors = {
+        "vmware": "VMware",
+        "virtualbox": "VirtualBox",
+        "kvm": "KVM",
+        "qemu": "QEMU",
+        "hyper-v": "Hyper-V",
+        "microsoft corporation virtual": "Hyper-V",
+        "parallels": "Parallels",
+        "xen": "Xen",
+        "bhyve": "bhyve",
+    }
+    for marker, label in vendors.items():
+        if marker in lowered:
+            return label
+    return ""
 
 
 def _command_output(command: list[str], timeout: int = 8) -> str:
